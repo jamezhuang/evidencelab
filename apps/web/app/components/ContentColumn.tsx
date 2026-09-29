@@ -71,7 +71,7 @@ export function ContentColumn({ task }: ContentColumnProps) {
           <div className="space-y-0.5">
             <p className="font-semibold">演示阶段诚实说明</p>
             <p className="text-amber-800/90 leading-relaxed">
-              当前任务处于原型演示阶段，系统尚未调用真实 LLM 认知推理及网络搜索工具。展示的步骤与结论由后端内置任务生成，用于验证研究工作台的三栏协同工作流。
+              当前仍处于原型演示阶段。右侧 GitHub 仓库信息来自真实接口，但尚未进行基于问题的自动检索、LLM 推理或证据核验；步骤与提示文字不能作为选型结论。
             </p>
           </div>
         </div>

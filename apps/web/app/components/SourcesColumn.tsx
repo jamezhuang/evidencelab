@@ -7,7 +7,7 @@ interface SourcesColumnProps {
   onFetchGithubSources?: () => Promise<void>;
 }
 
-export function SourcesColumn({ task }: SourcesColumnProps) {
+export function SourcesColumn({ task, onFetchGithubSources }: SourcesColumnProps) {
   const [githubLoading, setGithubLoading] = useState(false);
   const [githubNotice, setGithubNotice] = useState<string | null>(null);
 
@@ -17,25 +17,11 @@ export function SourcesColumn({ task }: SourcesColumnProps) {
     setGithubNotice(null);
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/tasks/${task.id}/sources/github`, {
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        if (response.status === 404 || response.status === 405) {
-          setGithubNotice(
-            "提示：后端尚未实现 POST /tasks/{id}/sources/github 接口。遵循客观性原则，本界面不伪造虚构的项目数据。"
-          );
-          return;
-        }
-        throw new Error(`请求失败 (${response.status})`);
-      }
-
+      if (!onFetchGithubSources) throw new Error("未配置 GitHub 来源接口");
+      await onFetchGithubSources();
       setGithubNotice("GitHub 来源数据已检索并更新。");
-    } catch {
-      setGithubNotice(
-        "提示：后端尚未开通 GitHub 项目资料自动检索接口（POST /tasks/{id}/sources/github）。"
-      );
+    } catch (err) {
+      setGithubNotice(err instanceof Error ? err.message : "获取来源失败");
     } finally {
       setGithubLoading(false);
     }

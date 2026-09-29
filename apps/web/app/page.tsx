@@ -10,7 +10,6 @@ import { SourcesColumn } from "./components/SourcesColumn";
 
 const API_BASE = "http://127.0.0.1:8000";
 const STORAGE_TASK_KEY = "evidencelab:last-task-id";
-const STORAGE_PLAN_OVERRIDE_PREFIX = "evidencelab:task-plan-override:";
 
 export default function Home() {
   const [task, setTask] = useState<Task | null>(null);
@@ -30,16 +29,6 @@ export default function Home() {
         return res.json() as Promise<Task>;
       })
       .then((loadedTask) => {
-        // 检查是否有本地修改但未成功持久化到后端的计划覆盖
-        const override = localStorage.getItem(`${STORAGE_PLAN_OVERRIDE_PREFIX}${loadedTask.id}`);
-        if (override) {
-          try {
-            const parsedSteps = JSON.parse(override) as Step[];
-            loadedTask.steps = parsedSteps;
-          } catch {
-            // ignore parse error
-          }
-        }
         setTask(loadedTask);
       })
       .catch(() => {
@@ -88,12 +77,6 @@ export default function Home() {
     setError(null);
     setInfoNotice(null);
 
-    // 在本地先保持响应式更新并存入本地缓存，保证刷新后依然可见
-    localStorage.setItem(
-      `${STORAGE_PLAN_OVERRIDE_PREFIX}${task.id}`,
-      JSON.stringify(updatedSteps)
-    );
-
     try {
       const res = await fetch(`${API_BASE}/tasks/${task.id}/plan`, {
         method: "PUT",
@@ -101,26 +84,30 @@ export default function Home() {
         body: JSON.stringify({ steps: updatedSteps }),
       });
 
-      if (!res.ok) {
-        if (res.status === 404 || res.status === 405) {
-          // 后端尚未实现 PUT /tasks/{id}/plan 时的说明
-          setInfoNotice("计划修改已在本地保存并生效（提示：后端尚未实现 PUT /tasks/{id}/plan 接口，刷新页面将从本地缓存恢复修改结果）。");
-          setTask({ ...task, steps: updatedSteps });
-          return;
-        }
-        throw new Error(`后端保存失败（HTTP ${res.status}）`);
-      }
+      if (!res.ok) throw new Error(`后端保存失败（HTTP ${res.status}）`);
 
       const updatedTask = (await res.json()) as Task;
       setTask(updatedTask);
       setInfoNotice("计划修改已成功同步并持久化至后端。");
-    } catch {
-      // 网络错误或未启动接口时，同样保留本地状态并给予诚实反馈
-      setTask({ ...task, steps: updatedSteps });
-      setInfoNotice("计划修改已在本地缓存并生效（提示：后端 PUT /tasks/{id}/plan 接口暂未响应）。");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "保存计划失败";
+      setError(message);
+      throw err;
     } finally {
       setSavingPlan(false);
     }
+  };
+
+  const handleFetchGithubSources = async () => {
+    if (!task) return;
+    const res = await fetch(`${API_BASE}/tasks/${task.id}/sources/github`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null);
+      throw new Error(detail?.detail || `获取来源失败（HTTP ${res.status}）`);
+    }
+    setTask((await res.json()) as Task);
   };
 
   return (
@@ -173,7 +160,7 @@ export default function Home() {
 
           <ContentColumn task={task} />
 
-          <SourcesColumn task={task} />
+          <SourcesColumn task={task} onFetchGithubSources={handleFetchGithubSources} />
         </div>
       </main>
 
