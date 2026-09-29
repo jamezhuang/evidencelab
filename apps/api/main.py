@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -137,7 +137,7 @@ def fetch_repository(name: str):
         },
     )
     try:
-        with urlopen(request, timeout=15) as response:
+        with build_opener(ProxyHandler({})).open(request, timeout=15) as response:
             data = json.load(response)
     except HTTPError as exc:
         raise HTTPException(
