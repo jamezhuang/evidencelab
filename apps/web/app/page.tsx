@@ -1,161 +1,188 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
+import type { Task, Step } from "./types";
+import { Header } from "./components/Header";
+import { QuestionInput } from "./components/QuestionInput";
+import { PlanColumn } from "./components/PlanColumn";
+import { ContentColumn } from "./components/ContentColumn";
+import { SourcesColumn } from "./components/SourcesColumn";
 
-type Step = {
-  id: number;
-  title: string;
-  status: "done" | "active" | "pending";
-};
-
-type Source = {
-  title: string;
-  url: string;
-  type: string;
-};
-
-type Task = {
-  id: string;
-  question: string;
-  mode: string;
-  steps: Step[];
-  finding: string;
-  sources: Source[];
-};
+const API_BASE = "http://127.0.0.1:8000";
+const STORAGE_TASK_KEY = "evidencelab:last-task-id";
+const STORAGE_PLAN_OVERRIDE_PREFIX = "evidencelab:task-plan-override:";
 
 export default function Home() {
-  const [question, setQuestion] = useState("");
   const [task, setTask] = useState<Task | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [infoNotice, setInfoNotice] = useState<string | null>(null);
+
+  // 1. 恢复最近任务
   useEffect(() => {
-    const savedId = localStorage.getItem("evidencelab:last-task-id");
+    const savedId = localStorage.getItem(STORAGE_TASK_KEY);
     if (!savedId) return;
 
-    fetch(`http://127.0.0.1:8000/tasks/${savedId}`)
-      .then((response) => {
-        if (!response.ok) throw new Error("无法恢复上次的任务");
-        return response.json() as Promise<Task>;
+    fetch(`${API_BASE}/tasks/${savedId}`)
+      .then((res) => {
+        if (!res.ok) throw new Error("无法恢复上次的任务记录");
+        return res.json() as Promise<Task>;
       })
-      .then(setTask)
-      .catch(() => localStorage.removeItem("evidencelab:last-task-id"));
+      .then((loadedTask) => {
+        // 检查是否有本地修改但未成功持久化到后端的计划覆盖
+        const override = localStorage.getItem(`${STORAGE_PLAN_OVERRIDE_PREFIX}${loadedTask.id}`);
+        if (override) {
+          try {
+            const parsedSteps = JSON.parse(override) as Step[];
+            loadedTask.steps = parsedSteps;
+          } catch {
+            // ignore parse error
+          }
+        }
+        setTask(loadedTask);
+      })
+      .catch(() => {
+        localStorage.removeItem(STORAGE_TASK_KEY);
+      });
   }, []);
-  async function createTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setLoading(true);
-    setError("");
+
+  // 2. 创建任务
+  const handleCreateTask = async (question: string) => {
+    setCreating(true);
+    setError(null);
+    setInfoNotice(null);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/tasks", {
+      const res = await fetch(`${API_BASE}/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question.trim() }),
+        body: JSON.stringify({ question }),
       });
 
-      if (!response.ok) {
-        throw new Error(
-          response.status === 422
-            ? "问题至少需要输入 5 个字符"
-            : "创建任务失败，请检查后端是否运行",
-        );
+      if (!res.ok) {
+        if (res.status === 422) {
+          throw new Error("选型问题过短或格式有误，至少需要输入 5 个字符");
+        }
+        throw new Error(`创建任务失败（HTTP ${res.status}）。请确认本地 FastAPI 服务已在 ${API_BASE} 运行。`);
       }
 
-      const created = (await response.json()) as Task;
+      const created = (await res.json()) as Task;
       setTask(created);
-      localStorage.setItem("evidencelab:last-task-id", created.id);
+      localStorage.setItem(STORAGE_TASK_KEY, created.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "请求失败");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "无法连接到后端服务，请检查 http://127.0.0.1:8000 是否启动"
+      );
     } finally {
-      setLoading(false);
+      setCreating(false);
     }
-  }
+  };
+
+  // 3. 编辑与保存计划
+  const handleSavePlan = async (updatedSteps: Step[]) => {
+    if (!task) return;
+    setSavingPlan(true);
+    setError(null);
+    setInfoNotice(null);
+
+    // 在本地先保持响应式更新并存入本地缓存，保证刷新后依然可见
+    localStorage.setItem(
+      `${STORAGE_PLAN_OVERRIDE_PREFIX}${task.id}`,
+      JSON.stringify(updatedSteps)
+    );
+
+    try {
+      const res = await fetch(`${API_BASE}/tasks/${task.id}/plan`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ steps: updatedSteps }),
+      });
+
+      if (!res.ok) {
+        if (res.status === 404 || res.status === 405) {
+          // 后端尚未实现 PUT /tasks/{id}/plan 时的说明
+          setInfoNotice("计划修改已在本地保存并生效（提示：后端尚未实现 PUT /tasks/{id}/plan 接口，刷新页面将从本地缓存恢复修改结果）。");
+          setTask({ ...task, steps: updatedSteps });
+          return;
+        }
+        throw new Error(`后端保存失败（HTTP ${res.status}）`);
+      }
+
+      const updatedTask = (await res.json()) as Task;
+      setTask(updatedTask);
+      setInfoNotice("计划修改已成功同步并持久化至后端。");
+    } catch {
+      // 网络错误或未启动接口时，同样保留本地状态并给予诚实反馈
+      setTask({ ...task, steps: updatedSteps });
+      setInfoNotice("计划修改已在本地缓存并生效（提示：后端 PUT /tasks/{id}/plan 接口暂未响应）。");
+    } finally {
+      setSavingPlan(false);
+    }
+  };
 
   return (
-    <main className="min-h-screen bg-slate-100 p-6 text-slate-900">
-      <div className="mx-auto max-w-7xl">
-        <header className="mb-6">
-          <p className="text-sm font-semibold text-blue-700">EvidenceLab</p>
-          <h1 className="mt-1 text-2xl font-bold">技术选型研究工作台</h1>
-          <p className="mt-2 text-slate-600">
-            输入研究问题，创建一项可追溯的研究任务。
-          </p>
-        </header>
+    <div className="min-h-screen bg-slate-50/60 text-slate-900 flex flex-col font-sans">
+      <Header task={task} loading={creating} />
 
-        <form
-          onSubmit={createTask}
-          className="mb-6 flex flex-col gap-3 sm:flex-row"
-        >
-          <input
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            placeholder="例如：为内部知识助手选择合适的 Agent 框架"
-            className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-blue-600"
+      <main className="flex-1 mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        <QuestionInput
+          onSubmit={handleCreateTask}
+          loading={creating}
+        />
+
+        {error && (
+          <div className="mb-6 rounded-xl border border-red-200 bg-red-50/90 p-4 text-sm text-red-700 flex items-start justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">请求异常:</span>
+              <span>{error}</span>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-xs text-red-500 hover:text-red-800 font-medium shrink-0"
+            >
+              忽略
+            </button>
+          </div>
+        )}
+
+        {infoNotice && (
+          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50/90 p-4 text-xs sm:text-sm text-blue-800 flex items-start justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">系统状态提示:</span>
+              <span>{infoNotice}</span>
+            </div>
+            <button
+              onClick={() => setInfoNotice(null)}
+              className="text-xs text-blue-500 hover:text-blue-800 font-medium shrink-0"
+            >
+              关闭
+            </button>
+          </div>
+        )}
+
+        {/* 桌面端三栏布局，窄屏顺序堆叠 */}
+        <div className="grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_320px] gap-6 items-start">
+          <PlanColumn
+            task={task}
+            onSavePlan={handleSavePlan}
+            saving={savingPlan}
           />
-          <button
-            type="submit"
-            disabled={loading || question.trim().length < 5}
-            className="rounded-xl bg-blue-700 px-5 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ? "创建中..." : "开始研究"}
-          </button>
-        </form>
 
-        {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+          <ContentColumn task={task} />
 
-        <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)_280px]">
-          <section className="rounded-xl bg-white p-5 shadow-sm">
-            <h2 className="mb-4 font-semibold">研究计划</h2>
-            {task ? (
-              <ol className="space-y-4">
-                {task.steps.map((step) => (
-                  <li key={step.id} className="text-sm">
-                    <span className="mr-2 text-blue-700">{step.id}.</span>
-                    {step.title}
-                    <span className="mt-1 block pl-5 text-xs text-slate-500">
-                      {step.status === "done" ? "已完成" : "待开始"}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p className="text-sm text-slate-500">创建任务后显示计划</p>
-            )}
-          </section>
-
-          <section className="min-h-96 rounded-xl bg-white p-6 shadow-sm">
-            <h2 className="font-semibold">研究内容</h2>
-            {task ? (
-              <>
-                <p className="mt-4 font-medium">{task.question}</p>
-                <p className="mt-5 leading-8 text-slate-600">{task.finding}</p>
-                <p className="mt-8 text-xs text-amber-700">
-                  当前为演示模式，尚未调用模型或搜索工具。
-                </p>
-              </>
-            ) : (
-              <p className="mt-5 text-slate-500">输入问题，开始第一项研究。</p>
-            )}
-          </section>
-
-          <section className="rounded-xl bg-white p-5 shadow-sm">
-            <h2 className="mb-4 font-semibold">证据来源</h2>
-            {task && task.sources.length > 0 ? (
-              <ul className="space-y-3">
-                {task.sources.map((source) => (
-                  <li
-                    key={source.title}
-                    className="rounded-lg border p-3 text-sm"
-                  >
-                    {source.title} · {source.type}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-slate-500">真实检索后在这里展示来源</p>
-            )}
-          </section>
+          <SourcesColumn task={task} />
         </div>
-      </div>
-    </main>
+      </main>
+
+      <footer className="border-t border-slate-200/80 bg-white py-4 mt-auto">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-2">
+          <span>EvidenceLab · 可交互技术选型研究工作台</span>
+          <span>遵循客观求证与证据链透明原则 · 演示工程</span>
+        </div>
+      </footer>
+    </div>
   );
 }
